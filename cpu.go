@@ -38,10 +38,21 @@ func NewCPU() *CPU {
 	return cpu
 }
 
+func (c *CPU) WriteWord(addr uint16, data uint16) {
+	fmt.Printf("Write 16 bits 0x%x to 0x%x\n", data, addr)
+
+	c.ram[addr] = uint8(data & 0xff)
+	c.ram[addr+1] = uint8(data>>8)
+}
+
 func (c *CPU) WriteByte(addr uint16, data byte) {
 	fmt.Printf("Write 0x%x to 0x%x\n", data, addr)
 
 	c.ram[addr] = data
+}
+
+func (c *CPU) ReadWord(addr uint16) uint16 {
+	return uint16(c.ReadByte(addr)) + (uint16(c.ReadByte(addr+1)) << 8)
 }
 
 func (c *CPU) ReadByte(addr uint16) byte {
@@ -78,19 +89,19 @@ func (c *CPU) Run() {
 			c.isCB = false
 
 			if !ok {
-				fmt.Printf("Unknown cb-opcode 0x%x\n", code)
+				fmt.Printf("Unknown cb-opcode 0x%x at 0x%x\n", code, c.Register.PC)
 				return
 			}
 		} else {
 			opcode, ok = Opcodes[code]
 
 			if !ok {
-				fmt.Printf("Unknown opcode 0x%x\n", code)
+				fmt.Printf("Unknown opcode 0x%x at 0x%x\n", code, c.Register.PC)
 				return
 			}
 		}
 
-		fmt.Printf("Opcode is %s\n", opcode.Mnemonic)
+		fmt.Printf("Opcode is %s at 0x%x\n", opcode.Mnemonic, c.Register.PC)
 
 		data := make([]byte, opcode.Length)
 		end := c.Register.PC + uint16(opcode.Length)
