@@ -12,22 +12,31 @@ type Opcode struct {
 }
 
 var Opcodes = map[uint8]Opcode {
+	0x04: {Mnemonic: "INC B", 		Length: 1, Duration: 4,		Callback: inc_b},
 	0x05: {Mnemonic: "DEC B",		Length: 1, Duration: 4, 	Callback: dec_b},
 	0x06: {Mnemonic: "LD B,d8",		Length: 2, Duration: 8,		Callback: ld_b_n},
 	0x0c: {Mnemonic: "INC C",		Length: 1, Duration: 4,		Callback: inc_c},
+	0x0d: {Mnemonic: "DEC C",		Length: 1, Duration: 4,		Callback: dec_c},
 	0x0e: {Mnemonic: "LD C,d8",		Length: 2, Duration: 8,		Callback: ld_c_n},
 	0x11: {Mnemonic: "LD DE,d16",	Length: 3, Duration: 12,	Callback: ld_de_nn},
 	0x13: {Mnemonic: "INC DE",		Length: 1, Duration: 8, 	Callback: inc_de},
 	0x17: {Mnemonic: "RLA",			Length: 1, Duration: 4,		Callback: rla},
+	0x18: {Mnemonic: "JR r8",		Length: 2, Duration: 12,	Callback: jr},
 	0x1a: {Mnemonic: "LD A,(DE)", 	Length: 1, Duration: 8,		Callback: ld_a_de},
+	0x1e: {Mnemonic: "LD E,d8",		Length: 2, Duration: 8,		Callback: ld_e_d},
 	0x20: {Mnemonic: "JR NZ,r8",	Length: 2, Duration: 12/8,	Callback: jr_nz_n},
 	0x21: {Mnemonic: "LD HL,d16", 	Length: 3, Duration: 12,	Callback: ld_hl_nn},
 	0x22: {Mnemonic: "LD (HL+),A",	Length: 1, Duration: 8, 	Callback: ld_hli_a},
 	0x23: {Mnemonic: "INC HL",		Length: 1, Duration: 8, 	Callback: inc_hl},
+	0x28: {Mnemonic: "JR Z,r8",		Length: 2, Duration: 12/8,	Callback: jr_z_r},
+	0x2e: {Mnemonic: "LD L,d8",		Length: 2, Duration: 8, 	Callback: ld_l_d},
 	0x31: {Mnemonic: "LD SP,d16", 	Length: 3, Duration: 12,	Callback: ld_sp_nn},
 	0x32: {Mnemonic: "LD (HL-),A",	Length: 1, Duration: 8,		Callback: ld_hld_a},
+	0x3d: {Mnemonic: "DEC A",		Length: 1, Duration: 4,		Callback: dec_a},
 	0x3e: {Mnemonic: "LD A,d8",		Length: 2, Duration: 8,		Callback: ld_a_n},
 	0x4f: {Mnemonic: "LD C,A",		Length: 1, Duration: 4,		Callback: ld_c_a},
+	0x57: {Mnemonic: "LD D,A",		Length: 1, Duration: 4,		Callback: ld_d_a},
+	0x67: {Mnemonic: "LD H,A",		Length: 1, Duration: 4,		Callback: ld_h_a},
 	0x77: {Mnemonic: "LD (HL),A",	Length: 1, Duration: 8, 	Callback: ld_hl_a},
 	0x7b: {Mnemonic: "LD A,E",		Length: 1, Duration: 4,		Callback: ld_a_e},
 	//0x80: {Mnemonic: "ADD A,B",		Length: 1, Duration: 4, 	Callback: add_a_b},
@@ -39,12 +48,25 @@ var Opcodes = map[uint8]Opcode {
 	0xcd: {Mnemonic: "CALL a16",	Length: 3, Duration: 24,	Callback: call_nn},
 	0xe0: {Mnemonic: "LDH A,(a8)",	Length: 2, Duration: 12,	Callback: ldh_a_n},
 	0xe2: {Mnemonic: "LD (C),A",	Length: 1, Duration: 8,		Callback: ld_c_a_2},
+	0xea: {Mnemonic: "LD (a16),A", 	Length: 3, Duration: 16,	Callback: ld_aa_a},
+	0xf0: {Mnemonic: "LDH A,(a8)", 	Length: 2, Duration: 12,	Callback: ldh_a_a},
 	0xfe: {Mnemonic: "CP d8",		Length: 2, Duration: 8,		Callback: cp_n},
 }
 
 var OpcodesCB = map[uint8]Opcode {
 	0x11: {Mnemonic: "RL C",		Length: 1, Duration: 8,		Callback: rl_c},
 	0x7c: {Mnemonic: "BIT 7,H",		Length: 1, Duration: 8,		Callback: bit_7_h},
+}
+
+func inc_b(cpu *CPU, data []byte) {
+	cpu.Register.B++
+
+	if cpu.Register.B != 0 {
+		cpu.Register.F = 0x00
+	} else {
+		// Overflow
+		cpu.Register.F = 0x80
+	}
 }
 
 func dec_b(cpu *CPU, data []byte) {
@@ -69,6 +91,16 @@ func inc_c(cpu *CPU, data []byte) {
 		cpu.Register.F = 0x00
 	} else {
 		// Overflow
+		cpu.Register.F = 0x80
+	}
+}
+
+func dec_c(cpu *CPU, data []byte) {
+	cpu.Register.C--
+	cpu.Register.C &= 0xff
+	if cpu.Register.C != 0 {
+		cpu.Register.F = 0
+	} else {
 		cpu.Register.F = 0x80
 	}
 }
@@ -110,9 +142,32 @@ func rla(cpu *CPU, data []byte) {
 	cpu.Register.M = 1
 }
 
+func jr(cpu *CPU, data []byte) {
+	i := int32(data[1])
+	if i > 127 {
+		i =-((^i+1)&255)
+	}
+	cpu.Register.M = 2
+
+	if i < 0 {
+		cpu.Register.PC -= uint16(-i)
+	} else {
+		cpu.Register.PC += uint16(i)
+	}
+
+	fmt.Printf("Jumped to 0x%x\n", cpu.Register.PC)
+
+	cpu.Register.M++
+}
+
 func ld_a_de(cpu *CPU, data []byte) {
 	addr := (uint16(cpu.Register.D) << 8) + uint16(cpu.Register.E)
 	cpu.Register.A = cpu.ReadByte(addr)
+	cpu.Register.M = 2
+}
+
+func ld_e_d(cpu *CPU, data []byte) {
+	cpu.Register.E = data[1]
 	cpu.Register.M = 2
 }
 
@@ -159,6 +214,30 @@ func inc_hl(cpu *CPU, data []byte) {
 	cpu.Register.M = 1
 }
 
+func jr_z_r(cpu *CPU, data []byte) {
+	i := int32(data[1])
+	if i > 127 {
+		i =-((^i+1)&255)
+	}
+	cpu.Register.M = 2
+	if cpu.Register.F & 0x80 == 0x80 {
+		if i < 0 {
+			cpu.Register.PC -= uint16(-i)
+		} else {
+			cpu.Register.PC += uint16(i)
+		}
+
+		fmt.Printf("Jumped to 0x%x\n", cpu.Register.PC)
+
+		cpu.Register.M++
+	}
+}
+
+func ld_l_d(cpu *CPU, data []byte) {
+	cpu.Register.L = data[1]
+	cpu.Register.M = 2
+}
+
 func ld_sp_nn(cpu *CPU, data []byte) {
 	cpu.Register.SP = uint16(data[1]) | (uint16(data[2]) << 8)
 	cpu.Register.M = 3
@@ -175,6 +254,16 @@ func ld_hld_a(cpu *CPU, data []byte) {
 	cpu.Register.M = 2
 }
 
+func dec_a(cpu *CPU, data []byte) {
+	cpu.Register.A--
+	cpu.Register.A &= 0xff
+	if cpu.Register.A != 0 {
+		cpu.Register.F = 0
+	} else {
+		cpu.Register.F = 0x80
+	}
+}
+
 func ld_a_n(cpu *CPU, data []byte) {
 	cpu.Register.A = data[1]
 	cpu.Register.M = 2
@@ -182,6 +271,16 @@ func ld_a_n(cpu *CPU, data []byte) {
 
 func ld_c_a(cpu *CPU, data []byte) {
 	cpu.Register.C = cpu.Register.A
+	cpu.Register.M = 1
+}
+
+func ld_d_a(cpu *CPU, data []byte) {
+	cpu.Register.D = cpu.Register.A
+	cpu.Register.M = 1
+}
+
+func ld_h_a(cpu *CPU, data []byte) {
+	cpu.Register.H = cpu.Register.A
 	cpu.Register.M = 1
 }
 
@@ -271,6 +370,17 @@ func ldh_a_n(cpu *CPU, data []byte) {
 func ld_c_a_2(cpu *CPU, data []byte) {
 	cpu.WriteByte(0xFF00+uint16(cpu.Register.C), cpu.Register.A)
 	cpu.Register.M = 2
+}
+
+func ld_aa_a(cpu *CPU, data []byte) {
+	addr := (uint16(data[2]) << 8)+uint16(data[1])
+	cpu.WriteByte(addr, cpu.Register.A)
+	cpu.Register.M = 4
+}
+
+func ldh_a_a(cpu *CPU, data []byte) {
+	cpu.Register.A = cpu.ReadByte(0xFF00 + uint16(data[1]))
+	cpu.Register.M = 3
 }
 
 func cp_n(cpu *CPU, data []byte) {
