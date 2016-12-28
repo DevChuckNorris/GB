@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"fmt"
+	"github.com/veandco/go-sdl2/sdl"
 )
 
 type Register struct {
@@ -20,6 +21,15 @@ type Register struct {
 
 	M	byte
 	T	byte
+
+	IME	byte
+}
+
+type MBC struct {
+	rombank		byte
+	rambank		byte
+	ramon		uint16
+	mode		uint16
 }
 
 type CPU struct {
@@ -30,16 +40,26 @@ type CPU struct {
 
 	gpu		 	*GPU
 	Register	Register
+	RSV			Register
 
 	Clock	uint16
 
 	Ie		byte
 	If		byte	// Interrupt flags
 	inBios  bool
+
+	romoffs uint16
+	ramoffs uint16
+
+	mbc1	MBC
 }
 
 func NewCPU() *CPU {
 	cpu := new(CPU)
+
+	cpu.Register.IME = 1
+	cpu.romoffs = 0x4000
+	cpu.mbc1 = MBC{}
 
 	cpu.ram = make([]byte, 65535)
 	cpu.gpu = NewGPU(cpu)
@@ -74,11 +94,40 @@ func (c *CPU) WriteByte(addr uint16, data byte) {
 	//fmt.Printf("Write 0x%x to 0x%x\n", data, addr)
 
 	switch addr & 0xf000 {
+	case 0x0000, 0x1000:
+		if data & 0xf == 0xa {
+			c.mbc1.ramon = 1
+		} else {
+			c.mbc1.ramon = 0
+		}
+
+		break
+	case 0x2000, 0x3000:
+		c.mbc1.rombank &= 0x60
+		data &= 0x1f
+		if data == 0 {
+			data = 1
+		}
+		c.mbc1.rombank |= data
+		c.romoffs = uint16(c.mbc1.rombank) * 0x4000
+		break
+	case 0x4000, 0x5000:
+		if c.mbc1.mode != 0 {
+			c.mbc1.rambank = data&3
+			c.ramoffs = uint16(c.mbc1.rambank) * 0x2000
+		} else {
+			c.mbc1.rombank &= 0x1f
+			c.mbc1.rombank |= (data&3) << 5
+			c.romoffs = uint16(c.mbc1.rombank) * 0x4000
+		}
+		break
+	case 0x6000, 0x7000:
+		c.mbc1.mode = uint16(data) & 1
+		break
 	case 0x8000, 0x9000:	// vram
 		c.gpu.WriteVram(addr & 0x1fff, data)
 		c.gpu.UpdateTile(addr & 0x1fff, data)
 		break
-
 	case 0xf000:
 		switch addr & 0x0f00 {
 		case 0x000, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800, 0x900, 0xa00, 0xb00, 0xc00, 0xd00:
@@ -95,6 +144,10 @@ func (c *CPU) WriteByte(addr uint16, data byte) {
 				c.Ie = data
 				return
 			} else if addr > 0xFF7F {
+				fmt.Printf("Write 0x%x to 0x%x\n", data, addr)
+				if addr == 0xff85 {
+					sdl.Delay(1000)
+				}
 				c.ram[addr] = data
 				return
 			} else {
@@ -148,6 +201,8 @@ func (c *CPU) ReadByte(addr uint16) byte {
 	case 0x1000, 0x2000, 0x3000:
 		//fmt.Printf("Read rom at 0x%x\n", addr)
 		return c.rom[addr]
+	case 0x4000, 0x5000, 0x6000, 0x7000:
+		return c.rom[c.romoffs+(addr & 0x3fff)]
 	case 0xf000:
 		switch addr & 0x0f00 {
 		case 0x000, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800, 0x900, 0xa00, 0xb00, 0xc00, 0xd00:
@@ -162,6 +217,7 @@ func (c *CPU) ReadByte(addr uint16) byte {
 			if addr == 0xffff {
 				return c.Ie
 			} else if addr > 0xFF7F {
+				//fmt.Printf("Read 0x%x from 0x%x\n", c.ram[addr], addr)
 				return c.ram[addr]
 			} else {
 				switch addr & 0xf0 {
@@ -210,7 +266,7 @@ func (c *CPU) Run() {
 	c.Register.PC = 0
 
 	for {
-		code := c.ram[c.Register.PC]
+		code := c.ReadByte(c.Register.PC)
 
 		var opcode Opcode
 		var ok bool
@@ -233,7 +289,7 @@ func (c *CPU) Run() {
 		}
 
 		if c.Register.PC >= 0xe9 {
-			fmt.Printf("Opcode is %s at 0x%x\n", opcode.Mnemonic, c.Register.PC)
+			//fmt.Printf("Opcode is %s at 0x%x\n", opcode.Mnemonic, c.Register.PC)
 			//return
 		}
 
@@ -241,7 +297,7 @@ func (c *CPU) Run() {
 		end := c.Register.PC + uint16(opcode.Length)
 		i := 0
 		for c.Register.PC < end {
-			data[i] = c.ram[c.Register.PC]
+			data[i] = c.ReadByte(c.Register.PC)
 			c.Register.PC++
 			i++
 		}

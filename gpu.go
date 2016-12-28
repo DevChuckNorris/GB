@@ -38,7 +38,7 @@ type GPU struct {
 	modeClocks	uint16
 	lineMode	byte
 	curLine		byte
-	curScan		uint16
+	curScan		uint32
 	lcdon		bool
 	bgtilebase	uint16
 	bgmapbase	uint16
@@ -49,6 +49,10 @@ type GPU struct {
 	yscrl		byte
 	xscrl		byte
 	raster		byte
+
+	pixels		[]byte
+
+	debug		bool
 }
 
 func NewGPU(cpu *CPU) *GPU {
@@ -112,7 +116,7 @@ func (g *GPU) ReadByte(addr uint16) byte {
 }
 
 func (g *GPU) WriteVram(addr uint16, value byte) {
-	fmt.Printf("Write VRAM 0x%x <- 0x%x\n", addr, value)
+	//fmt.Printf("Write VRAM 0x%x <- 0x%x\n", addr, value)
 
 	g.vram[addr] = value
 }
@@ -299,12 +303,25 @@ func (g *GPU) UpdateTile(addr uint16, data byte) {
 	}
 }
 
+func (g *GPU) SetPixel(pixelnum uint32, color byte) {
+	g.pixels[pixelnum+0] = color
+	g.pixels[pixelnum+1] = color
+	g.pixels[pixelnum+2] = color
+}
+
 func (g *GPU) CheckLine() {
 	var event sdl.Event
 	for event = sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
-		switch event.(type) {
+		switch t := event.(type) {
 		case *sdl.QuitEvent:
 			g.running = false
+			break
+		case *sdl.KeyDownEvent:
+			if t.Keysym.Sym == 100 {
+				g.debug = true
+			}
+			fmt.Printf("Key Press %v", t.Keysym.Sym)
+			break
 		}
 	}
 
@@ -315,7 +332,6 @@ func (g *GPU) CheckLine() {
 		if g.modeClocks >= 51 {
 			if g.curLine == 143 {
 				g.lineMode = 1
-				// todo write image to window
 				g.cpu.If |= 1
 			} else {
 				g.lineMode = 2
@@ -330,6 +346,10 @@ func (g *GPU) CheckLine() {
 			g.modeClocks = 0
 			g.curLine++
 			if g.curLine > 153 {
+				if g.debug {
+					sdl.Delay(5000)
+				}
+
 				g.curLine = 0
 				g.curScan = 0
 				g.lineMode = 2
@@ -374,9 +394,7 @@ func (g *GPU) CheckLine() {
 							color := g.paletteBg[tilerow[x]]
 
 							//fmt.Printf("Write 0x%0x to %v\n", color, linebase+3)
-							g.surface.Pixels()[linebase+0] = color
-							g.surface.Pixels()[linebase+1] = color
-							g.surface.Pixels()[linebase+2] = color
+							g.SetPixel(linebase, color)
 							x++
 							if x == 8 {
 								t = (t+1)&31
@@ -397,9 +415,7 @@ func (g *GPU) CheckLine() {
 						for w > 0 {
 							g.scanrow[160-x] = tilerow[x]
 							//fmt.Printf("Write 0x%0x to %v\n", g.paletteBg[tilerow[x]], linebase+3)
-							g.surface.Pixels()[linebase+0] = g.paletteBg[tilerow[x]]
-							g.surface.Pixels()[linebase+1] = g.paletteBg[tilerow[x]]
-							g.surface.Pixels()[linebase+2] = g.paletteBg[tilerow[x]]
+							g.SetPixel(linebase, g.paletteBg[tilerow[x]])
 							x++
 							if x == 8 {
 								t = (t+1)&31
@@ -440,15 +456,13 @@ func (g *GPU) CheckLine() {
 									pal = g.paletteObj0
 								}
 
-								linebase = uint16((int16(g.curLine) * 160 + obj.x)*4)
+								linebase = uint32((int32(g.curLine) * 160 + int32(obj.x))*4)
 								if obj.xflip {
 									for x := int16(0); x < 8; x++ {
 										if obj.x+x >= 0 && obj.x+x < 160 {
 											if tilerow[7-x] != 0 && (obj.prio || g.scanrow[x] == 0) {
 												//fmt.Printf("Write 0x%0x to %v\n", pal[tilerow[7-x]], linebase+3)
-												g.surface.Pixels()[linebase+0] = pal[tilerow[7-x]]
-												g.surface.Pixels()[linebase+1] = pal[tilerow[7-x]]
-												g.surface.Pixels()[linebase+2] = pal[tilerow[7-x]]
+												g.SetPixel(linebase, pal[tilerow[7-x]])
 											}
 										}
 										linebase += 4
@@ -458,9 +472,7 @@ func (g *GPU) CheckLine() {
 										if obj.x+x >= 0 && obj.x+x < 160 {
 											if tilerow[x] != 0 && (obj.prio || g.scanrow[x] == 0) {
 												//fmt.Printf("Write 0x%0x to %v\n", pal[tilerow[x]], linebase+3)
-												g.surface.Pixels()[linebase+0] = pal[tilerow[x]]
-												g.surface.Pixels()[linebase+1] = pal[tilerow[x]]
-												g.surface.Pixels()[linebase+2] = pal[tilerow[x]]
+												g.SetPixel(linebase, pal[tilerow[x]])
 											}
 										}
 										linebase += 4
@@ -513,5 +525,7 @@ func (g *GPU) init() {
 
 	rect := sdl.Rect{0, 0, 160, 144}
 	g.surface.FillRect(&rect, 0xffffffff)
+
+	g.pixels = g.surface.Pixels()
 }
 
