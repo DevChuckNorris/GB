@@ -24,18 +24,43 @@ type Register struct {
 
 type CPU struct {
 	ram		[]byte
+	rom		[]byte
 
 	isCB	bool
 
-	Register Register
+	gpu		 	*GPU
+	Register	Register
+
+	Clock	uint16
+
+	Ie		byte
+	If		byte	// Interrupt flags
+	inBios  bool
 }
 
 func NewCPU() *CPU {
 	cpu := new(CPU)
 
 	cpu.ram = make([]byte, 65535)
+	cpu.gpu = NewGPU(cpu)
 
 	return cpu
+}
+
+func (c *CPU) LoadROM(file string) {
+	c.rom = make([]byte, 32768)
+
+	f, err := os.Open(file)
+	if err != nil {
+		panic(err)
+	}
+
+	n1, err := f.Read(c.rom)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Read %d rom\n", n1)
 }
 
 func (c *CPU) WriteWord(addr uint16, data uint16) {
@@ -46,7 +71,55 @@ func (c *CPU) WriteWord(addr uint16, data uint16) {
 }
 
 func (c *CPU) WriteByte(addr uint16, data byte) {
-	fmt.Printf("Write 0x%x to 0x%x\n", data, addr)
+	//fmt.Printf("Write 0x%x to 0x%x\n", data, addr)
+
+	switch addr & 0xf000 {
+	case 0x8000, 0x9000:	// vram
+		c.gpu.WriteVram(addr & 0x1fff, data)
+		c.gpu.UpdateTile(addr & 0x1fff, data)
+		break
+
+	case 0xf000:
+		switch addr & 0x0f00 {
+		case 0x000, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800, 0x900, 0xa00, 0xb00, 0xc00, 0xd00:
+			c.ram[addr] = data
+			return
+		case 0xe00:
+			if (addr&0xFF)<0xA0 {
+				c.gpu.WriteOam(addr & 0xFF, data)
+			}
+			c.gpu.UpdateOam(addr,data)
+			return
+		case 0xf00:
+			if addr == 0xffff {
+				c.Ie = data
+				return
+			} else if addr > 0xFF7F {
+				c.ram[addr] = data
+				return
+			} else {
+				switch addr & 0xf0 {
+				case 0x00:
+					switch addr & 0xf {
+					case 0:
+						return	// JOYP
+					case 4: case 5: case 6: case 7:
+						return	// Timer
+					case 15:
+						c.If = data
+						return
+					default:
+						return
+					}
+				case 0x10, 0x20, 0x30:
+					return
+				case 0x40, 0x50, 0x60, 0x70:
+					c.gpu.WriteByte(addr, data)
+					return
+				}
+			}
+		}
+	}
 
 	c.ram[addr] = data
 }
@@ -56,6 +129,62 @@ func (c *CPU) ReadWord(addr uint16) uint16 {
 }
 
 func (c *CPU) ReadByte(addr uint16) byte {
+	switch addr & 0xf000 {
+	case 0x0000:
+		if c.inBios {
+			if addr < 0x0100 {
+				return c.ram[addr]
+			} else if c.Register.PC == 0x100 {
+				c.inBios = false
+				fmt.Println("Leave bios/bootloader")
+			}
+
+			//fmt.Printf("Read rom at 0x%x\n", addr)
+			return c.rom[addr]
+		} else {
+			//fmt.Printf("Read rom at 0x%x\n", addr)
+			return c.rom[addr]
+		}
+	case 0x1000, 0x2000, 0x3000:
+		//fmt.Printf("Read rom at 0x%x\n", addr)
+		return c.rom[addr]
+	case 0xf000:
+		switch addr & 0x0f00 {
+		case 0x000, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800, 0x900, 0xa00, 0xb00, 0xc00, 0xd00:
+			return c.ram[addr]
+		case 0xe00:
+			if addr & 0xff < 0xa0 {
+				return c.gpu.ReadOam(addr & 0xff)
+			} else {
+				return 0
+			}
+		case 0xf00:
+			if addr == 0xffff {
+				return c.Ie
+			} else if addr > 0xFF7F {
+				return c.ram[addr]
+			} else {
+				switch addr & 0xf0 {
+				case 0x00:
+					switch addr & 0xf {
+					case 0:
+						return 0	// JOYP
+					case 4: case 5: case 6: case 7:
+						return 0	// Timer
+					case 15:
+						return c.If
+					default:
+						return 0
+					}
+				case 0x10, 0x20, 0x30:
+					return 0
+				case 0x40, 0x50, 0x60, 0x70:
+					return c.gpu.ReadByte(addr)
+				}
+			}
+		}
+	}
+
 	return c.ram[addr]
 }
 
@@ -73,6 +202,8 @@ func (c *CPU) LoadBootLoader(file string) {
 	if n1 != 256 {
 		panic(fmt.Errorf("BootLoader is not 256 byte long, is %d long", n1))
 	}
+
+	c.inBios = true
 }
 
 func (c *CPU) Run() {
@@ -101,7 +232,10 @@ func (c *CPU) Run() {
 			}
 		}
 
-		fmt.Printf("Opcode is %s at 0x%x\n", opcode.Mnemonic, c.Register.PC)
+		if c.Register.PC >= 0xe9 {
+			fmt.Printf("Opcode is %s at 0x%x\n", opcode.Mnemonic, c.Register.PC)
+			//return
+		}
 
 		data := make([]byte, opcode.Length)
 		end := c.Register.PC + uint16(opcode.Length)
@@ -114,8 +248,17 @@ func (c *CPU) Run() {
 
 		if opcode.Callback != nil {
 			opcode.Callback(c, data)
+
+			c.Clock += uint16(c.Register.M)
 		} else {
 			fmt.Println("Not implemented!")
+		}
+
+		// GPU action
+		c.gpu.CheckLine()
+
+		if !c.gpu.IsRunning() {
+			break
 		}
 	}
 }
